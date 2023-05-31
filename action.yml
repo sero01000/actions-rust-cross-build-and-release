@@ -1,0 +1,91 @@
+name: "Build and release Rust Projects with Cross"
+author: "https://github.com/sero01000/"
+branding:
+  icon: home
+  color: gray-dark
+description: |
+  Cross compile and release your Rust projects with cross (https://github.com/cross-rs/cross).
+inputs:
+  command:
+    description: |
+      The commands to run (one of "build", "test", or "both").
+    default: build
+  target:
+    description: The target platform
+    required: true
+  toolchain:
+    description: |
+      The target toolchain to use (one of "stable", "beta", or "nightly").
+    default: stable
+  GITHUB_TOKEN:
+    description: |
+      A GitHub token, available in the secrets.GITHUB_TOKEN context variable.
+    default: ${{ github.token }}
+  args:
+    description: |
+      The arguments to be passed to cross or cargo when building, as a
+      space-separated string.
+    default: ""
+  strip:
+    description: Strip the compiled binary
+    default: false
+runs:
+  using: composite
+  steps:
+    - name: Add this action's path to PATH
+      shell: bash
+      run: echo "${{ github.action_path }}" >> $GITHUB_PATH
+    - name: Determine whether we need to cross-compile
+      id: determine-cross-compile
+      shell: bash
+      run: set-cross-compile.sh ${{ inputs.target }}
+    - name: Install toolchain if not cross-compiling
+      uses: dtolnay/rust-toolchain@master
+      with:
+        targets: ${{ inputs.target }}
+        toolchain: ${{ inputs.toolchain }}
+    - name: Install cross if cross-compiling (*nix)
+      shell: bash
+      run: install-cross-nix.sh
+      if: ${{ steps.determine-cross-compile.outputs.needs-cross == 'true' && runner.os != 'Windows' }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+    - name: Install cross if cross-compiling (Windows)
+      shell: powershell
+      run: install-cross-windows.ps1
+      if: ${{ steps.determine-cross-compile.outputs.needs-cross == 'true' && runner.os == 'Windows' }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+    - name: Set build command
+      id: set-build-command
+      shell: bash
+      run: set-build-command.sh
+    - name: Run tests (*nix)
+      shell: bash
+      run: |
+        ${{ steps.set-build-command.outputs.build-command }} +${{inputs.toolchain}} test ${{ inputs.args }} --target ${{ inputs.target }}
+      if: ${{ inputs.command != 'build' && runner.os != 'Windows' }}
+    # We want to run in Powershell on Windows to make sure we compile in a
+    # native Windows environment. Some things won't compile properly under
+    # msys, notably OpenSSL, which is compiled locally when using the
+    # `openssl` crate with the `vendored` feature.
+    - name: Run tests (Windows)
+      shell: powershell
+      run: |
+        & ${{ steps.set-build-command.outputs.build-command }} +${{inputs.toolchain}} test ${{ inputs.args }} --target ${{ inputs.target }}
+      if: ${{ inputs.command != 'build' && runner.os == 'Windows' }}
+    - name: Build binary (*nix)
+      shell: bash
+      run: |
+        ${{ steps.set-build-command.outputs.build-command }} +${{inputs.toolchain}} build ${{ inputs.args }} --target ${{ inputs.target }}
+      if: ${{ inputs.command != 'test' && runner.os != 'Windows' }}
+    - name: Build binary (Windows)
+      shell: powershell
+      run: |
+        & ${{ steps.set-build-command.outputs.build-command }} +${{inputs.toolchain}} build ${{ inputs.args }} --target ${{ inputs.target }}
+      if: ${{ inputs.command != 'test' && runner.os == 'Windows' }}
+    - name: Strip binary
+      shell: bash
+      run: strip-binary.sh ${{ inputs.target }}
+      # strip doesn't work with cross-arch binaries on Linux or Windows.
+      if: ${{ inputs.command != 'test' && inputs.strip == 'true' && steps.determine-cross-compile.outputs.needs-cross == 'false' && inputs.target != 'aarch64-pc-windows-msvc' }}
